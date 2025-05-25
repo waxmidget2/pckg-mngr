@@ -1,24 +1,22 @@
 #include "package_manager.h"
+#include "tracker.h"
+#include "curl_downloader.h"
+
 #include <iostream>
 #include <limits>
+#include <sstream>
+#include <filesystem>
 
-PackageManager::PackageManager() {
-    std::fstream inFile;
-    inFile.open("package_queue.txt", std::ios::in);
-
-    // Create queue file if it doesn't exist.
-    if (!inFile) {
-        std::cerr << "NO PACKAGE QUEUE FILE FOUND. Generating...\n";
-        std::ofstream creating_file("package_queue.txt");
-        creating_file.close();
-        inFile.open("package_queue.txt", std::ios::in); // Re-open for input
-        if (!inFile) {
-            std::cerr << "ERROR: Could not create or open package_queue.txt. Exiting.\n";
-            return;
-        }
+// Constructor implementation
+PackageManager::PackageManager() : tracker(), downloader() {
+    std::fstream file(QUEUE_FILENAME, std::ios::in | std::ios::out | std::ios::app);
+    if (!file.is_open()) {
+        std::cerr << "ERROR: Could not open or create " << QUEUE_FILENAME << ". Exiting.\n";
+        return;
     }
+    file.close();
+
     load_queue_from_file();
-    inFile.close();
 }
 
 // Processes the user's mode choice.
@@ -29,7 +27,7 @@ bool PackageManager::chooseMode(const std::string& choice) {
         prompt_for_command(package_command);
         add_to_queue(package_command);
     } else if (choice == "p") {
-        print_queue(); 
+        print_queue();
     } else if (choice == "d") {
         delete_from_queue();
     } else if (choice == "e") {
@@ -38,11 +36,11 @@ bool PackageManager::chooseMode(const std::string& choice) {
         execute_queue();
     } else if (choice == "quit" || choice == "q") {
         save_queue_to_file();
-        return false; // Signal to quit (loops)
+        return false;
     } else {
         std::cout << "Invalid choice. Please enter 'a', 'p', 'd', 'x', or 'q'.\n";
     }
-    return true; // Signal to continue
+    return true;
 }
 
 // Prompts user for a package command string.
@@ -53,36 +51,41 @@ void PackageManager::prompt_for_command(std::string& package_command) {
 
 // Edits a given queue element.
 void PackageManager::edit_queue() {
-  if (package_queue.empty()) {
-    std::cout << "\nQueue is empty!\n";
-    return;
-  }
-  print_queue();
+    if (package_queue.empty()) {
+        std::cout << "\nQueue is empty!\n";
+        return;
+    }
+    print_queue();
 
-  int pckg_index {};
-  std::string mut_package_command {};
-  
-  std::cout << "Enter package index (1-9999): ";
-  std::getline(std::cin, mut_package_command);
+    int pckg_index{};
+    std::string mut_package_command{};
 
-  try {
-      pckg_index = std::stoi(mut_package_command) - 1; // Convert to 0-based index
-  } catch (const std::invalid_argument& e) {
-      std::cerr << "Invalid input. Please enter a number.\n";
-      return;
-  } catch (const std::out_of_range& e) {
-      std::cerr << "Number out of range.\n";
-      return;
-  }
-
-  if (pckg_index >= 0 && pckg_index < static_cast<int>(package_queue.size())) {
-    package_queue.erase(package_queue.begin() + pckg_index);
-    std::cout << "Editing command (" << pckg_index + 1 << "): ";
+    std::cout << "Enter package index (1-" << package_queue.size() << "): ";
     std::getline(std::cin, mut_package_command);
-    package_queue.push_back(mut_package_command);
-  } else {
-    std::cout << "Cannot edit empty command.\n";
-  }
+
+    try {
+        pckg_index = std::stoi(mut_package_command) - 1;
+    } catch (const std::invalid_argument& e) {
+        std::cerr << "Invalid input. Please enter a number.\n";
+        return;
+    } catch (const std::out_of_range& e) {
+        std::cerr << "Number out of range.\n";
+        return;
+    }
+
+    if (pckg_index >= 0 && pckg_index < static_cast<int>(package_queue.size())) {
+        std::cout << "Current command (" << pckg_index + 1 << "): " << package_queue[pckg_index] << "\n";
+        std::cout << "Enter new command for index " << pckg_index + 1 << ": ";
+        std::getline(std::cin, mut_package_command);
+        if (!mut_package_command.empty()) {
+            package_queue[pckg_index] = mut_package_command;
+            std::cout << "Command updated successfully.\n";
+        } else {
+            std::cout << "New command cannot be empty. Original command retained.\n";
+        }
+    } else {
+        std::cout << "Invalid package index.\n";
+    }
 }
 
 // Adds a command to the in-memory queue.
@@ -116,14 +119,14 @@ void PackageManager::delete_from_queue() {
     }
 
     print_queue();
-    std::string command_selection_str {};
+    std::string command_selection_str{};
     int index_to_delete = -1;
 
     std::cout << "Enter the number of the command to delete: ";
     std::getline(std::cin, command_selection_str);
 
     try {
-        index_to_delete = std::stoi(command_selection_str) - 1; // Convert to 0-based index
+        index_to_delete = std::stoi(command_selection_str) - 1;
     } catch (const std::invalid_argument& e) {
         std::cerr << "Invalid input. Please enter a number.\n";
         return;
@@ -142,18 +145,16 @@ void PackageManager::delete_from_queue() {
 
 // Loads commands from "package_queue.txt" into the in-memory queue.
 void PackageManager::load_queue_from_file() {
-    std::fstream inFile;
-    inFile.open("package_queue.txt", std::ios::in);
+    std::ifstream inFile(QUEUE_FILENAME);
 
     if (!inFile.is_open()) {
-        std::cerr << "Error: Could not open 'package_queue.txt' for loading.\n";
+        std::cerr << "Error: Could not open '" << QUEUE_FILENAME << "' for loading.\n";
         return;
     }
 
     std::string line;
     while (std::getline(inFile, line)) {
         if (!line.empty()) {
-            // Remove leading "X. " prefix if present.
             size_t pos = line.find(". ");
             if (pos != std::string::npos && pos < 4) {
                 package_queue.push_back(line.substr(pos + 2));
@@ -163,15 +164,15 @@ void PackageManager::load_queue_from_file() {
         }
     }
     inFile.close();
-    std::cout << "Loaded " << package_queue.size() << " commands from 'package_queue.txt'.\n";
+    std::cout << "Loaded " << package_queue.size() << " commands from '" << QUEUE_FILENAME << "'.\n";
 }
 
 // Saves the current in-memory queue to "package_queue.txt", overwriting existing content.
 void PackageManager::save_queue_to_file() const {
-    std::ofstream outFile("package_queue.txt", std::ios::out);
+    std::ofstream outFile(QUEUE_FILENAME, std::ios::out);
 
     if (!outFile.is_open()) {
-        std::cerr << "Error: Could not open 'package_queue.txt' for saving.\n";
+        std::cerr << "Error: Could not open '" << QUEUE_FILENAME << "' for saving.\n";
         return;
     }
 
@@ -179,7 +180,7 @@ void PackageManager::save_queue_to_file() const {
         outFile << i + 1 << ". " << package_queue[i] << '\n';
     }
     outFile.close();
-    std::cout << "Queue saved to 'package_queue.ntext'.\n";
+    std::cout << "Queue saved to '" << QUEUE_FILENAME << "'.\n";
 }
 
 // Processes a single command string, specifically handling 'download' commands.
@@ -198,8 +199,8 @@ bool PackageManager::process_command(const std::string& command_string) {
             return false;
         }
 
-        std::getline(ss, url_str); // Read the rest of the line as URL
-        size_t first_char_pos = url_str.find_first_not_of(" \t"); // Trim leading whitespace
+        std::getline(ss, url_str);
+        size_t first_char_pos = url_str.find_first_not_of(" \t");
         if (first_char_pos != std::string::npos) {
             package.downloadUrl = url_str.substr(first_char_pos);
         } else {
@@ -207,6 +208,8 @@ bool PackageManager::process_command(const std::string& command_string) {
             return false;
         }
         package.version = version_str;
+
+        tracker.pushVersion(package.version, package.name, package.downloadUrl);
 
         if (package.name.empty() || package.version.empty() || package.downloadUrl.empty()) {
             std::cerr << "Error: Incomplete download command: " << command_string << ". Missing name, version, or URL.\n";
@@ -226,7 +229,6 @@ bool PackageManager::process_command(const std::string& command_string) {
             }
         }
 
-        // Construct output filename.
         std::string filename = package.name + "-" + package.version;
         size_t last_slash = package.downloadUrl.find_last_of('/');
         std::string potential_filename_in_url = (last_slash != std::string::npos) ? package.downloadUrl.substr(last_slash + 1) : package.downloadUrl;
@@ -234,7 +236,7 @@ bool PackageManager::process_command(const std::string& command_string) {
         if (last_dot != std::string::npos && last_dot < potential_filename_in_url.length() - 1) {
             filename += potential_filename_in_url.substr(last_dot);
         } else {
-            filename += ".bin"; // Default extension
+            filename += ".bin";
         }
 
         std::filesystem::path output_path = install_dir / filename;
@@ -248,7 +250,7 @@ bool PackageManager::process_command(const std::string& command_string) {
         }
     } else {
         std::cout << "Skipping unknown command type: '" << command_type << "' in queue: " << command_string << std::endl;
-        return true; // Command skipped, not an error
+        return true;
     }
 }
 
@@ -279,7 +281,6 @@ void PackageManager::execute_queue() {
         }
     }
 
-    // Offer to clear the queue after execution.
     std::string clear_choice;
     std::cout << "Do you want to clear the executed commands from the queue? (y/n): ";
     std::getline(std::cin, clear_choice);
